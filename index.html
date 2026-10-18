@@ -37,7 +37,8 @@ canvas{width:100%;max-width:340px;aspect-ratio:1;margin:0 auto;display:block}
 .pair span{display:block;font:600 10px var(--mono);letter-spacing:.14em;color:var(--dim)}
 .pair b{font:500 34px var(--mono);font-variant-numeric:tabular-nums;color:var(--amber)}
 .sub{font:12px var(--mono);color:var(--dim);margin-top:8px;font-variant-numeric:tabular-nums}
-.controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;padding:14px 0 18px}
+.controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;padding:14px 0 0}
+.sign{text-align:center;font:11px var(--mono);letter-spacing:.2em;color:#5a564c;padding:12px 0 14px}
 button{font:700 15px var(--sans);border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:16px 8px}
 button:active{transform:scale(.97)}
 button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
@@ -84,6 +85,8 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
   <button id="holdBtn" aria-pressed="false">HOLD</button>
   <button id="resetBtn">RESET</button>
 </div>
+
+<div class="sign">by sovaracing</div>
 
 <script>
 (() => {
