@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Inclinometro">
+<meta name="theme-color" content="#14130f">
+<title>Inclinometro</title>
+<style>
+/* Strumento da officina: display ambra su fondo grafite, un solo schermo */
+:root{
+  --bg:#14130f; --panel:#1d1c17; --line:#34322a; --fg:#ece7da; --dim:#8d877a;
+  --amber:#ffb23e; --ok:#5fd18b; --warn:#e5674b;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace; --sans:-apple-system,system-ui,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);
+  padding:env(safe-area-inset-top,0px) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0px) max(16px,env(safe-area-inset-left,0px));
+  display:flex;flex-direction:column;-webkit-user-select:none;user-select:none;overflow:hidden}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 0}
+.brand{font:700 12px var(--mono);letter-spacing:.14em;color:var(--dim)}
+.chip{font:600 11px var(--mono);letter-spacing:.1em;padding:5px 10px;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
+.chip.ok{color:var(--ok);border-color:var(--ok)}
+.chip.hold{color:var(--bg);background:var(--amber);border-color:var(--amber)}
+main{flex:1;display:flex;flex-direction:column;justify-content:center;gap:18px;min-height:0}
+canvas{width:100%;max-width:340px;aspect-ratio:1;margin:0 auto;display:block}
+.readout{text-align:center}
+.mode{font:600 11px var(--mono);letter-spacing:.16em;color:var(--dim);text-transform:uppercase}
+.big{font:500 clamp(56px,20vw,84px)/1 var(--mono);font-variant-numeric:tabular-nums;color:var(--amber);margin-top:6px}
+.big small{font-size:.45em;color:var(--dim)}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px}
+.pair div{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;text-align:center}
+.pair span{display:block;font:600 10px var(--mono);letter-spacing:.14em;color:var(--dim)}
+.pair b{font:500 34px var(--mono);font-variant-numeric:tabular-nums;color:var(--amber)}
+.sub{font:12px var(--mono);color:var(--dim);margin-top:8px;font-variant-numeric:tabular-nums}
+.controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;padding:14px 0 18px}
+button{font:700 15px var(--sans);border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:16px 8px}
+button:active{transform:scale(.97)}
+button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+#zeroBtn{background:var(--amber);color:#1a1405;border-color:var(--amber)}
+#holdBtn[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+.start{flex:1;display:flex;flex-direction:column;justify-content:center;gap:18px;max-width:360px;margin:0 auto;text-align:center}
+.start h1{font:700 26px var(--sans)}
+.start p{color:var(--dim);font-size:14px;line-height:1.5}
+.start button{background:var(--amber);color:#1a1405;border:none;font-size:17px;padding:18px}
+.err{color:var(--warn);font-size:13px;min-height:1em}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">INCLINOMETRO</div>
+  <div class="chip" id="stab">—</div>
+</header>
+
+<section class="start" id="start">
+  <h1>Inclinometro con azzeramento</h1>
+  <p>Appoggia il telefono sul pezzo di riferimento, premi <b>ZERO</b>, poi appoggialo sul pezzo da misurare: leggi l'angolo relativo.</p>
+  <p>In piano misura due assi. Appoggiato su un bordo misura l'angolo nel piano dello schermo.</p>
+  <button id="startBtn">Attiva sensori</button>
+  <div class="err" id="err"></div>
+</section>
+
+<main id="app" hidden>
+  <canvas id="cv" width="680" height="680"></canvas>
+  <div class="readout">
+    <div class="mode" id="modeLbl">Bordo</div>
+    <div class="big" id="edgeVal">0.0<small>°</small></div>
+    <div class="pair" id="flatVals" hidden>
+      <div><span>ASSE X</span><b id="xVal">0.0°</b></div>
+      <div><span>ASSE Y</span><b id="yVal">0.0°</b></div>
+    </div>
+    <div class="sub" id="sub">assoluto —</div>
+  </div>
+</main>
+
+<div class="controls" id="ctrl" hidden>
+  <button id="zeroBtn">ZERO</button>
+  <button id="holdBtn" aria-pressed="false">HOLD</button>
+  <button id="resetBtn">RESET</button>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const DEG = 180 / Math.PI;
+  const N = 45;                 // campioni mediati (~0,75 s a 60 Hz)
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  const buf = [];               // vettori gravità normalizzati
+  let mode = 'edge';            // 'edge' | 'flat'
+  let hold = false;
+  let zero = { edge: 0, fx: 0, fy: 0, set: false };
+  let cur = { edge: 0, fx: 0, fy: 0 };   // angoli assoluti mediati
+  let shown = { edge: 0, fx: 0, fy: 0 };
+  let stable = false;
+
+  try { const z = JSON.parse(localStorage.getItem('inclZero')); if (z) zero = z; } catch (e) {}
+  const saveZero = () => { try { localStorage.setItem('inclZero', JSON.stringify(zero)); } catch (e) {} };
+
+  const wrap = a => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
+  const fmt = a => (Math.abs(a) < 0.05 ? 0 : a).toFixed(1);
+
+  function onMotion(e) {
+    const g = e.accelerationIncludingGravity;
+    if (!g || g.x == null) return;
+    // vettore "giù" con convenzione unica: iOS lo riporta già così, Android al contrario
+    const s = isIOS ? 1 : -1;
+    let x = g.x * s, y = g.y * s, z = g.z * s;
+    const m = Math.hypot(x, y, z);
+    if (m < 5) return;          // scarta urti/cadute
+    buf.push([x / m, y / m, z / m]);
+    if (buf.length > N) buf.shift();
+    compute();
+  }
+
+  function compute() {
+    const n = buf.length;
+    let sx = 0, sy = 0, sz = 0;
+    for (const v of buf) { sx += v[0]; sy += v[1]; sz += v[2]; }
+    const mx = sx / n, my = sy / n, mz = sz / n;
+
+    // rumore angolare della media (gradi)
+    let vv = 0;
+    for (const v of buf) vv += (v[0]-mx)**2 + (v[1]-my)**2 + (v[2]-mz)**2;
+    const noise = Math.sqrt(vv / n) * DEG / Math.sqrt(n);
+    stable = n >= N && noise < 0.03;
+
+    // scelta modalità con isteresi
+    const flatness = Math.abs(mz) / Math.hypot(mx, my, mz);
+    if (mode === 'edge' && flatness > 0.85) mode = 'flat';
+    else if (mode === 'flat' && flatness < 0.70) mode = 'edge';
+
+    // bordo: rotazione nel piano dello schermo, 0 = verticale in portrait
+    cur.edge = Math.atan2(mx, -my) * DEG;
+    // piano: inclinazione sui due assi
+    const zz = Math.abs(mz);
+    cur.fx = Math.atan2(mx, zz) * DEG;
+    cur.fy = Math.atan2(my, zz) * DEG;
+  }
+
+  function rel() {
+    return {
+      edge: wrap(cur.edge - zero.edge),
+      fx: cur.fx - zero.fx,
+      fy: cur.fy - zero.fy
+    };
+  }
+
+  // ---- disegno ----
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const C = { line: css('--line'), dim: css('--dim'), amber: css('--amber'), ok: css('--ok'), panel: css('--panel') };
+
+  function draw(r) {
+    const W = cv.width, c = W / 2, R = W * 0.46;
+    ctx.clearRect(0, 0, W, W);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = C.line;
+    ctx.fillStyle = C.panel;
+    ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.fill(); ctx.stroke();
+
+    const level = mode === 'edge' ? Math.abs(r.edge) < 0.1 : (Math.abs(r.fx) < 0.1 && Math.abs(r.fy) < 0.1);
+    const col = level ? C.ok : C.amber;
+
+    if (mode === 'edge') {
+      // scala ogni 5°, tacche lunghe ogni 15°
+      for (let a = 0; a < 360; a += 5) {
+        const t = a / DEG, L = a % 15 === 0 ? 26 : 12;
+        ctx.strokeStyle = a % 90 === 0 ? C.dim : C.line;
+        ctx.beginPath();
+        ctx.moveTo(c + Math.sin(t) * R, c - Math.cos(t) * R);
+        ctx.lineTo(c + Math.sin(t) * (R - L), c - Math.cos(t) * (R - L));
+        ctx.stroke();
+      }
+      // indice: linea che resta orientata sul riferimento azzerato
+      const t = -r.edge / DEG;
+      ctx.save(); ctx.translate(c, c); ctx.rotate(t);
+      ctx.strokeStyle = col; ctx.lineWidth = 6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-R + 34, 0); ctx.lineTo(R - 34, 0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -R + 34); ctx.lineTo(0, -R + 70); ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = C.dim; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(c - R, c); ctx.lineTo(c - R + 24, c); ctx.moveTo(c + R, c); ctx.lineTo(c + R - 24, c); ctx.stroke();
+    } else {
+      // cerchi concentrici: 0,5° / 1° / 2° / 5°  (scala logaritmica)
+      const scale = d => Math.min(1, Math.log10(1 + Math.abs(d) * 2) / Math.log10(21)) * (R - 40) * Math.sign(d);
+      ctx.strokeStyle = C.line;
+      for (const d of [0.5, 1, 2, 5]) { ctx.beginPath(); ctx.arc(c, c, Math.abs(scale(d)), 0, 7); ctx.stroke(); }
+      ctx.beginPath(); ctx.moveTo(c - R, c); ctx.lineTo(c + R, c); ctx.moveTo(c, c - R); ctx.lineTo(c, c + R); ctx.stroke();
+      ctx.fillStyle = C.dim; ctx.font = '22px ui-monospace, Menlo, monospace'; ctx.textAlign = 'left';
+      for (const d of [0.5, 1, 2, 5]) ctx.fillText(d + '°', c + scale(d) + 6, c - 8);
+      // bolla: va verso il lato più alto
+      const bx = c - scale(r.fx), by = c - scale(r.fy);
+      ctx.fillStyle = col; ctx.globalAlpha = .9;
+      ctx.beginPath(); ctx.arc(bx, by, 30, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+    }
+  }
+
+  function render() {
+    if (!hold) shown = rel();
+    const r = shown;
+    $('modeLbl').textContent = (mode === 'edge' ? 'Bordo' : 'Piano') + (zero.set ? ' · relativo allo zero' : ' · assoluto');
+    $('edgeVal').hidden = mode !== 'edge';
+    $('flatVals').hidden = mode !== 'flat';
+    $('edgeVal').innerHTML = fmt(r.edge) + '<small>°</small>';
+    $('xVal').textContent = fmt(r.fx) + '°';
+    $('yVal').textContent = fmt(r.fy) + '°';
+    $('sub').textContent = mode === 'edge'
+      ? 'assoluto ' + fmt(cur.edge) + '°  ·  fuori squadra ' + fmt(((cur.edge % 90) + 135) % 90 - 45) + '°'
+      : 'assoluto X ' + fmt(cur.fx) + '°  Y ' + fmt(cur.fy) + '°';
+    const st = $('stab');
+    if (hold) { st.textContent = 'HOLD'; st.className = 'chip hold'; }
+    else if (stable) { st.textContent = 'STABILE'; st.className = 'chip ok'; }
+    else { st.textContent = 'ASSESTAMENTO'; st.className = 'chip'; }
+    draw(r);
+    requestAnimationFrame(render);
+  }
+
+  // ---- comandi ----
+  $('zeroBtn').onclick = () => {
+    zero = { edge: cur.edge, fx: cur.fx, fy: cur.fy, set: true };
+    saveZero(); hold = false; $('holdBtn').setAttribute('aria-pressed', 'false');
+  };
+  $('resetBtn').onclick = () => { zero = { edge: 0, fx: 0, fy: 0, set: false }; saveZero(); };
+  $('holdBtn').onclick = () => {
+    hold = !hold; $('holdBtn').setAttribute('aria-pressed', String(hold));
+  };
+
+  let wakeLock = null;
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+
+  $('startBtn').onclick = async () => {
+    $('err').textContent = '';
+    if (!window.isSecureContext) { $('err').textContent = 'La pagina deve essere aperta da un indirizzo https://.'; return; }
+    try {
+      if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+        const p = await DeviceMotionEvent.requestPermission();
+        if (p !== 'granted') { $('err').textContent = 'Permesso negato. Chiudi e riapri la pagina in Safari, poi premi di nuovo.'; return; }
+      }
+    } catch (e) { $('err').textContent = 'Errore permessi: ' + e.message; return; }
+    window.addEventListener('devicemotion', onMotion);
+    setTimeout(() => { if (!buf.length) $('err').textContent = 'Nessun dato dai sensori. Apri la pagina in Safari, non in un\'anteprima.'; }, 1500);
+    $('start').hidden = true; $('app').hidden = false; $('ctrl').hidden = false;
+    keepAwake();
+    requestAnimationFrame(render);
+  };
+})();
+</script>
+</body>
+</html>
